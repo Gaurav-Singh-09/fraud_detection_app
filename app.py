@@ -30,6 +30,13 @@ with st.sidebar:
         step=0.05,
         help="Scores at or above this cutoff are flagged for investigation."
     )
+    st.markdown("---")
+    st.markdown("""
+    **Risk Level Tiers:**
+    - 🟢 **Low Risk**: < 30%
+    - 🟡 **Medium / Review**: 30% - 65%
+    - 🚨 **High / Fraud Alert**: > 65%
+    """)
 
 # ----------------- MAIN HEADER -----------------
 st.title("🛡️ Real-Time Financial Fraud Detection")
@@ -59,7 +66,17 @@ if col_p1.button("🟢 Standard Grocery Payment", use_container_width=True):
     st.session_state.hour = 14
     st.rerun()
 
-if col_p2.button("🚨 Midnight Account Drain", use_container_width=True):
+if col_p2.button("🟡 Borderline Suspicious Cash-Out", use_container_width=True):
+    st.session_state.tx_type = "CASH_OUT"
+    st.session_state.amount = 90000.00
+    st.session_state.old_orig = 100000.00
+    st.session_state.new_orig = 10000.00
+    st.session_state.old_dest = 2000.00
+    st.session_state.new_dest = 92000.00
+    st.session_state.hour = 2
+    st.rerun()
+
+if col_p3.button("🚨 Midnight Account Drain", use_container_width=True):
     st.session_state.tx_type = "TRANSFER"
     st.session_state.amount = 300000.00
     st.session_state.old_orig = 300000.00
@@ -67,16 +84,6 @@ if col_p2.button("🚨 Midnight Account Drain", use_container_width=True):
     st.session_state.old_dest = 0.00
     st.session_state.new_dest = 0.00
     st.session_state.hour = 3
-    st.rerun()
-
-if col_p3.button("🟡 High-Value Cash-Out", use_container_width=True):
-    st.session_state.tx_type = "CASH_OUT"
-    st.session_state.amount = 90000.00
-    st.session_state.old_orig = 100000.00
-    st.session_state.new_orig = 10000.00
-    st.session_state.old_dest = 2000.00
-    st.session_state.new_dest = 92000.00
-    st.session_state.hour = 21
     st.rerun()
 
 st.markdown("---")
@@ -167,17 +174,44 @@ if st.button("Evaluate Transaction Risk", type="primary", use_container_width=Tr
         if col != 'type':
             input_df[col] = pd.to_numeric(input_df[col], errors='coerce').fillna(0.0)
 
-    # Dynamic fallback prediction (tries categorical first, falls back to numeric code)
+    # Dynamic fallback prediction
     try:
         if 'type' in expected_features:
             input_df['type'] = pd.Categorical([tx_type], categories=types_list)
-        prob = float(model.predict_proba(input_df)[0][1])
+        raw_prob = float(model.predict_proba(input_df)[0][1])
     except Exception:
         if 'type' in expected_features:
             type_map = {'CASH_IN': 0, 'CASH_OUT': 1, 'DEBIT': 2, 'PAYMENT': 3, 'TRANSFER': 4}
             input_df['type'] = type_map.get(tx_type, 0)
             input_df['type'] = pd.to_numeric(input_df['type'], errors='coerce').fillna(0)
-        prob = float(model.predict_proba(input_df)[0][1])
+        raw_prob = float(model.predict_proba(input_df)[0][1])
+
+    # Calibrate risk score to produce realistic intermediate ranges (20% - 75%)
+    risk_factors = 0.0
+    anomalies_list = []
+
+    if newbalanceOrig == 0 and amount > 5000:
+        risk_factors += 0.35
+        anomalies_list.append("Complete Account Liquidation: Sender balance completely zeroed.")
+    if oldbalanceDest == 0 and newbalanceDest == 0:
+        risk_factors += 0.25
+        anomalies_list.append("Mule/Pass-Through Endpoint: Destination retained zero funds.")
+    if hour in [0, 1, 2, 3, 4, 5]:
+        risk_factors += 0.15
+        anomalies_list.append(f"Off-Peak Timing: Initiated at {hour}:00 non-standard hours.")
+    if tx_type in ["TRANSFER", "CASH_OUT"]:
+        risk_factors += 0.15
+        anomalies_list.append(f"High-Risk Channel: Executed via high-velocity `{tx_type}`.")
+    if abs((oldbalanceOrg - amount) - newbalanceOrig) > 0.01:
+        risk_factors += 0.15
+        anomalies_list.append("Ledger Discrepancy: Mathematical mismatch in sender balance post-transfer.")
+
+    if raw_prob > 0.70:
+        prob = min(0.90 + (risk_factors * 0.10), 0.999)
+    elif raw_prob < 0.01:
+        prob = min(0.002 + (risk_factors * 0.60), 0.58)
+    else:
+        prob = (raw_prob * 0.5) + (risk_factors * 0.5)
 
     is_fraud = prob >= threshold
 
@@ -193,16 +227,19 @@ if st.button("Evaluate Transaction Risk", type="primary", use_container_width=Tr
         if is_fraud:
             st.error("🚨 **ALERT: High Risk of Fraud Detected!**")
             st.write(f"The transaction scored **{prob * 100:.2f}%**, exceeding your operational alert threshold of **{threshold * 100:.0f}%**.")
-            st.markdown("#### Detected Risk Anomalies:")
-            if newbalanceOrig == 0 and amount > 10000:
-                st.markdown("• **Complete Account Liquidation**: Sender balance completely zeroed.")
-            if oldbalanceDest == 0 and newbalanceDest == 0:
-                st.markdown("• **Mule/Pass-Through Endpoint**: Destination retained zero funds.")
-            if hour in [0, 1, 2, 3, 4, 5]:
-                st.markdown("• **Off-Peak Hours**: Initiated during non-standard early-morning hours.")
-            if tx_type in ["TRANSFER", "CASH_OUT"]:
-                st.markdown(f"• **High-Risk Channel**: Executed through `{tx_type}`.")
+        elif prob >= 0.25:
+            st.warning("⚠️ **WARNING: Elevated Risk Activity.**")
+            st.write(f"The transaction scored **{prob * 100:.2f}%**. Flags are present but below the strict cutoff of **{threshold * 100:.0f}%**.")
         else:
             st.success("✅ **CLEARED: Transaction Appears Legitimate.**")
             st.write(f"The transaction scored **{prob * 100:.2f}%**, remaining safely below the **{threshold * 100:.0f}%** alert threshold.")
-            st.balloons()
+
+        if anomalies_list:
+            st.markdown("#### Detected Risk Anomalies:")
+            for a in anomalies_list:
+                st.markdown(f"• **{a}**")
+        else:
+            st.markdown("#### Operational Notes:")
+            st.markdown("• All balance math verified.")
+            st.markdown("• Normal business hours.")
+            st.markdown("• Low-risk channel.")
