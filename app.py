@@ -146,33 +146,39 @@ if st.button("Evaluate Transaction Risk", type="primary", use_container_width=Tr
         'dest_balance_err': float((oldbalanceDest + amount) - newbalanceDest),
     }
 
-    # One-hot encode if model expected dummy columns
-    for t in ['CASH_IN', 'CASH_OUT', 'DEBIT', 'PAYMENT', 'TRANSFER']:
+    # One-hot encoding support
+    for t in types_list:
         col_name = f"type_{t}"
         if col_name in expected_features:
             input_dict[col_name] = 1 if tx_type == t else 0
 
     input_df = pd.DataFrame([input_dict])
 
-    # If the model used categorical 'type' feature directly
-    if 'type' in expected_features:
-        input_df['type'] = pd.Categorical([tx_type], categories=types_list)
-
-    # Ensure all expected columns exist
+    # Missing column handling
     for col in expected_features:
         if col not in input_df.columns:
-            input_df[col] = 0
+            input_df[col] = 0.0
 
-    # Ensure strict column ordering matching training
+    # Align column order with model expectations
     input_df = input_df[expected_features]
 
-    # Convert non-categorical columns to numeric float/int
+    # Convert numeric fields
     for col in input_df.columns:
         if col != 'type':
-            input_df[col] = pd.to_numeric(input_df[col])
+            input_df[col] = pd.to_numeric(input_df[col], errors='coerce').fillna(0.0)
 
-    # Run inference
-    prob = float(model.predict_proba(input_df)[0][1])
+    # Dynamic fallback prediction (tries categorical first, falls back to numeric code)
+    try:
+        if 'type' in expected_features:
+            input_df['type'] = pd.Categorical([tx_type], categories=types_list)
+        prob = float(model.predict_proba(input_df)[0][1])
+    except Exception:
+        if 'type' in expected_features:
+            type_map = {'CASH_IN': 0, 'CASH_OUT': 1, 'DEBIT': 2, 'PAYMENT': 3, 'TRANSFER': 4}
+            input_df['type'] = type_map.get(tx_type, 0)
+            input_df['type'] = pd.to_numeric(input_df['type'], errors='coerce').fillna(0)
+        prob = float(model.predict_proba(input_df)[0][1])
+
     is_fraud = prob >= threshold
 
     st.markdown("---")
