@@ -30,8 +30,6 @@ with st.sidebar:
         step=0.05,
         help="Scores at or above this cutoff are flagged for investigation."
     )
-    st.markdown("---")
-    st.caption("**Metric Focus**: High Precision-Recall AUC on extreme imbalance")
 
 # ----------------- MAIN HEADER -----------------
 st.title("🛡️ Real-Time Financial Fraud Detection")
@@ -40,7 +38,6 @@ st.write("Simulate transaction parameters to evaluate potential laundering or un
 # ----------------- QUICK LOAD PRESETS -----------------
 st.markdown("#### ⚡ Quick Load Simulation Scenarios")
 
-# Initialize default session state values if not present
 if "tx_type" not in st.session_state:
     st.session_state.tx_type = "TRANSFER"
     st.session_state.amount = 250000.00
@@ -138,51 +135,57 @@ def create_gauge(prob, thresh):
 # ----------------- PREDICTION PIPELINE -----------------
 st.markdown("###")
 if st.button("Evaluate Transaction Risk", type="primary", use_container_width=True):
-    # Construct base dictionary matching training features
     input_dict = {
-        'amount': amount,
-        'oldbalanceOrg': oldbalanceOrg,
-        'newbalanceOrig': newbalanceOrig,
-        'oldbalanceDest': oldbalanceDest,
-        'newbalanceDest': newbalanceDest,
-        'hour': hour,
-        'orig_balance_err': (oldbalanceOrg - amount) - newbalanceOrig,
-        'dest_balance_err': (oldbalanceDest + amount) - newbalanceDest,
+        'amount': float(amount),
+        'oldbalanceOrg': float(oldbalanceOrg),
+        'newbalanceOrig': float(newbalanceOrig),
+        'oldbalanceDest': float(oldbalanceDest),
+        'newbalanceDest': float(newbalanceDest),
+        'hour': int(hour),
+        'orig_balance_err': float((oldbalanceOrg - amount) - newbalanceOrig),
+        'dest_balance_err': float((oldbalanceDest + amount) - newbalanceDest),
     }
-    
-    # One-hot encode type if needed
+
+    # One-hot encode if model expected dummy columns
     for t in ['CASH_IN', 'CASH_OUT', 'DEBIT', 'PAYMENT', 'TRANSFER']:
         col_name = f"type_{t}"
         if col_name in expected_features:
             input_dict[col_name] = 1 if tx_type == t else 0
-            
-    if 'type' in expected_features:
-        input_dict['type'] = tx_type
 
     input_df = pd.DataFrame([input_dict])
-    
-    # Align dataframe with trained feature list
+
+    # If the model used categorical 'type' feature directly
+    if 'type' in expected_features:
+        input_df['type'] = pd.Categorical([tx_type], categories=types_list)
+
+    # Ensure all expected columns exist
     for col in expected_features:
         if col not in input_df.columns:
             input_df[col] = 0
+
+    # Ensure strict column ordering matching training
     input_df = input_df[expected_features]
 
-    # Model inference
+    # Convert non-categorical columns to numeric float/int
+    for col in input_df.columns:
+        if col != 'type':
+            input_df[col] = pd.to_numeric(input_df[col])
+
+    # Run inference
     prob = float(model.predict_proba(input_df)[0][1])
     is_fraud = prob >= threshold
 
     st.markdown("---")
-    
-    # Display Gauge and verdict side-by-side
+
     g_col, stat_col = st.columns([1.2, 1])
-    
+
     with g_col:
         st.plotly_chart(create_gauge(prob, threshold), use_container_width=True)
-        
+
     with stat_col:
         st.markdown("### Risk Evaluation Verdict")
         if is_fraud:
-            st.error(f"🚨 **ALERT: High Risk of Fraud Detected!**")
+            st.error("🚨 **ALERT: High Risk of Fraud Detected!**")
             st.write(f"The transaction scored **{prob * 100:.2f}%**, exceeding your operational alert threshold of **{threshold * 100:.0f}%**.")
             st.markdown("#### Detected Risk Anomalies:")
             if newbalanceOrig == 0 and amount > 10000:
