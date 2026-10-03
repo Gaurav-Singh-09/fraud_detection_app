@@ -31,7 +31,6 @@ with st.sidebar:
         help="Scores at or above this cutoff are flagged for investigation."
     )
     st.markdown("---")
-    st.caption("**Model Engine**: LightGBM Classifier")
     st.caption("**Metric Focus**: High Precision-Recall AUC on extreme imbalance")
 
 # ----------------- MAIN HEADER -----------------
